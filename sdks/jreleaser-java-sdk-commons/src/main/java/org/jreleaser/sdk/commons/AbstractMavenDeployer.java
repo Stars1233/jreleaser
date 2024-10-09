@@ -56,6 +56,9 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -73,8 +76,10 @@ import static java.nio.file.FileVisitResult.CONTINUE;
 import static org.jreleaser.model.spi.deploy.maven.Deployable.EXT_ASC;
 import static org.jreleaser.model.spi.deploy.maven.Deployable.EXT_JAR;
 import static org.jreleaser.model.spi.deploy.maven.Deployable.EXT_POM;
+import static org.jreleaser.model.spi.deploy.maven.Deployable.EXT_WAR;
 import static org.jreleaser.model.spi.deploy.maven.Deployable.MAVEN_METADATA_XML;
 import static org.jreleaser.model.spi.deploy.maven.Deployable.PACKAGING_JAR;
+import static org.jreleaser.model.spi.deploy.maven.Deployable.PACKAGING_WAR;
 import static org.jreleaser.util.StringUtils.isNotBlank;
 
 /**
@@ -102,11 +107,17 @@ public abstract class AbstractMavenDeployer<A extends org.jreleaser.model.api.de
         this.context = context;
     }
 
-    protected Set<Deployable> collectDeployables() {
+    protected Set<Deployable> collectDeployableArtifacts() {
         Set<Deployable> deployables = new TreeSet<>();
         for (String stagingRepository : getDeployer().getStagingRepositories()) {
             collectDeployables(deployables, stagingRepository);
         }
+
+        return deployables;
+    }
+
+    protected Set<Deployable> collectDeployables() {
+        Set<Deployable> deployables = collectDeployableArtifacts();
 
         Map<String, Deployable> deployablesMap = deployables.stream()
             .collect(Collectors.toMap(Deployable::getFullDeployPath, Function.identity()));
@@ -182,6 +193,13 @@ public abstract class AbstractMavenDeployer<A extends org.jreleaser.model.api.de
             if (!buildPom) {
                 if (deployable.requiresJar()) {
                     Deployable derived = deployable.deriveByFilename(PACKAGING_JAR, base + EXT_JAR);
+                    if (!deployablesMap.containsKey(derived.getFullDeployPath())) {
+                        errors.configuration(RB.$("validation_is_missing", derived.getFilename()));
+                    }
+                }
+
+                if (deployable.requiresWar()) {
+                    Deployable derived = deployable.deriveByFilename(PACKAGING_WAR, base + EXT_WAR);
                     if (!deployablesMap.containsKey(derived.getFullDeployPath())) {
                         errors.configuration(RB.$("validation_is_missing", derived.getFilename()));
                     }
@@ -335,7 +353,7 @@ public abstract class AbstractMavenDeployer<A extends org.jreleaser.model.api.de
             return;
         }
 
-        verifyKeyIsPublished();
+        verifyKeyIsValid();
 
         for (Deployable deployable : deployablesMap.values()) {
             if (deployable.isSignature() || deployable.isChecksum() || deployable.isMavenMetadata()) continue;
@@ -384,7 +402,7 @@ public abstract class AbstractMavenDeployer<A extends org.jreleaser.model.api.de
         return sourceLastModifiedTime.compareTo(targetLastModifiedTime) > 0;
     }
 
-    private void verifyKeyIsPublished() {
+    private void verifyKeyIsValid() {
         Optional<String> publicKeyID = Optional.empty();
 
         try {
@@ -399,7 +417,28 @@ public abstract class AbstractMavenDeployer<A extends org.jreleaser.model.api.de
             return;
         }
 
+
         String keyID = publicKeyID.get().toUpperCase(Locale.ENGLISH);
+
+        try {
+            Optional<Instant> expirationDate = SigningUtils.getExpirationDateOfPublicKey(context.asImmutable());
+
+            if (expirationDate.isPresent()) {
+                Instant ed = expirationDate.get();
+                if (Instant.EPOCH.equals(ed)) {
+                    context.getLogger().warn(RB.$("signing.public.key.no.expiration.date", keyID));
+
+                } else if (Instant.now().isAfter(ed)) {
+                    context.getLogger().warn(RB.$("ERROR_public_key_expired", keyID, LocalDateTime.ofInstant(ed, ZoneId.systemDefault())));
+                } else {
+                    context.getLogger().info(RB.$("signing.public.key.expiration.date", keyID, LocalDateTime.ofInstant(ed, ZoneId.systemDefault())));
+                }
+            }
+        } catch (SigningException e) {
+            context.getLogger().warn(RB.$("ERROR_public_key_not_found"));
+            return;
+        }
+
         boolean published = false;
 
         context.getLogger().info(RB.$("signing.check.published.key", keyID));
