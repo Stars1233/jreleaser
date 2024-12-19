@@ -29,7 +29,10 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static java.util.Collections.emptyMap;
 import static org.jreleaser.model.Constants.KEY_PLATFORM;
+import static org.jreleaser.util.StringUtils.capitalize;
+import static org.jreleaser.util.StringUtils.isTrue;
 
 /**
  * @author Andres Almiray
@@ -62,7 +65,7 @@ public final class ArchiveAssemblerResolver {
                 }
             }
         } else {
-            resolveArchiveOutput(context, assembler, null, assembler.isAttachPlatform() ? PlatformUtils.getCurrentFull() : "", errors);
+            resolveArchiveOutput(context, assembler, emptyMap(), assembler.isAttachPlatform() ? PlatformUtils.getCurrentFull() : "", errors);
         }
     }
 
@@ -78,6 +81,9 @@ public final class ArchiveAssemblerResolver {
         String archiveName = assembler.getResolvedArchiveName(context, matrix);
 
         for (org.jreleaser.model.Archive.Format format : assembler.getFormats()) {
+            String skipKey = "skip" + capitalize(format.formatted());
+            if (assembler.extraPropertyIsTrue(skipKey) || isTrue(matrix.get(skipKey))) continue;
+
             Path path = baseOutputDirectory
                 .resolve(archiveName + "." + format.extension())
                 .toAbsolutePath();
